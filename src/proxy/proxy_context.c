@@ -474,12 +474,13 @@ proxy_context_attach_resource(struct virgl_context *base, struct virgl_resource 
    if (proxy_context_resource_find(ctx, res_id))
       return;
 
-   /* The current render protocol only supports importing dma-buf, shm or pipe resource
-    * that can be exported to dma-buf. A protocol change is needed when there exists use
-    * case for importing external Vulkan opaque resource.
+   /* Vulkan opaque imports carry their allocation parameters in the guest
+    * vkAllocateMemory command. The existing import request carries the fd and
+    * resource size; vkr imports it as OPAQUE_FD rather than DMA_BUF.
     */
    if (res->fd_type != VIRGL_RESOURCE_FD_INVALID &&
        res->fd_type != VIRGL_RESOURCE_FD_DMABUF &&
+       res->fd_type != VIRGL_RESOURCE_FD_OPAQUE &&
        res->fd_type != VIRGL_RESOURCE_FD_SHM) {
       proxy_log("failed to attach res %d with fd_type %d", res_id, res->fd_type);
       return;
@@ -516,8 +517,22 @@ proxy_context_attach_resource(struct virgl_context *base, struct virgl_resource 
       .fd_type = res_fd_type,
       .size = res_size,
    };
-   if (!proxy_socket_send_request_with_fds(&ctx->socket, &req, sizeof(req), &res_fd, 1))
+#ifdef _WIN32
+   /* Inline transport shares the process fd table. Give the receiving context
+    * its own token, as SCM_RIGHTS does on Unix, instead of sharing ownership. */
+   int imported_fd = os_dupfd_cloexec(res_fd);
+   if (imported_fd < 0) return;
+   if (close_res_fd) os_close_fd(res_fd);
+   res_fd = imported_fd;
+   close_res_fd = false;
+#endif
+   if (!proxy_socket_send_request_with_fds(&ctx->socket, &req, sizeof(req), &res_fd, 1)) {
       proxy_log("failed to attach res %d", res_id);
+#ifdef _WIN32
+      os_close_fd(res_fd);
+#endif
+      return;
+   }
 
    if (res_fd >= 0 && close_res_fd)
       os_close_fd(res_fd);

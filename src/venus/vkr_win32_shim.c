@@ -109,16 +109,20 @@ vkr_win32_remap_external_handle_types_in_chain(const void *pNext)
       }
       case VK_STRUCTURE_TYPE_EXPORT_FENCE_CREATE_INFO: {
          VkExportFenceCreateInfo *info = (VkExportFenceCreateInfo *)iter;
-         if (info->handleTypes & VK_EXTERNAL_FENCE_HANDLE_TYPE_OPAQUE_FD_BIT) {
-            info->handleTypes &= ~VK_EXTERNAL_FENCE_HANDLE_TYPE_OPAQUE_FD_BIT;
+         if (info->handleTypes & (VK_EXTERNAL_FENCE_HANDLE_TYPE_OPAQUE_FD_BIT |
+                                 VK_EXTERNAL_FENCE_HANDLE_TYPE_SYNC_FD_BIT)) {
+            info->handleTypes &= ~(VK_EXTERNAL_FENCE_HANDLE_TYPE_OPAQUE_FD_BIT |
+                                   VK_EXTERNAL_FENCE_HANDLE_TYPE_SYNC_FD_BIT);
             info->handleTypes |= VK_EXTERNAL_FENCE_HANDLE_TYPE_OPAQUE_WIN32_BIT;
          }
          break;
       }
       case VK_STRUCTURE_TYPE_EXPORT_SEMAPHORE_CREATE_INFO: {
          VkExportSemaphoreCreateInfo *info = (VkExportSemaphoreCreateInfo *)iter;
-         if (info->handleTypes & VK_EXTERNAL_SEMAPHORE_HANDLE_TYPE_OPAQUE_FD_BIT) {
-            info->handleTypes &= ~VK_EXTERNAL_SEMAPHORE_HANDLE_TYPE_OPAQUE_FD_BIT;
+         if (info->handleTypes & (VK_EXTERNAL_SEMAPHORE_HANDLE_TYPE_OPAQUE_FD_BIT |
+                                 VK_EXTERNAL_SEMAPHORE_HANDLE_TYPE_SYNC_FD_BIT)) {
+            info->handleTypes &= ~(VK_EXTERNAL_SEMAPHORE_HANDLE_TYPE_OPAQUE_FD_BIT |
+                                   VK_EXTERNAL_SEMAPHORE_HANDLE_TYPE_SYNC_FD_BIT);
             info->handleTypes |= VK_EXTERNAL_SEMAPHORE_HANDLE_TYPE_OPAQUE_WIN32_BIT;
          }
          break;
@@ -168,6 +172,26 @@ vkr_win32_CreateDescriptorSetLayout(VkDevice device,
 /* ------------------------------------------------------------------ */
 /* CreateBuffer shim                                                   */
 /* ------------------------------------------------------------------ */
+
+static VKAPI_ATTR VkResult VKAPI_CALL
+vkr_win32_CreateFence(VkDevice device, const VkFenceCreateInfo *info,
+                      const VkAllocationCallbacks *allocator, VkFence *fence)
+{
+   struct vkr_win32_device_entry *entry = vkr_win32_lookup_device(device);
+   if (!entry) return VK_ERROR_DEVICE_LOST;
+   vkr_win32_remap_external_handle_types_in_chain(info->pNext);
+   return entry->saved_proc_table.CreateFence(device, info, allocator, fence);
+}
+
+static VKAPI_ATTR VkResult VKAPI_CALL
+vkr_win32_CreateSemaphore(VkDevice device, const VkSemaphoreCreateInfo *info,
+                          const VkAllocationCallbacks *allocator, VkSemaphore *semaphore)
+{
+   struct vkr_win32_device_entry *entry = vkr_win32_lookup_device(device);
+   if (!entry) return VK_ERROR_DEVICE_LOST;
+   vkr_win32_remap_external_handle_types_in_chain(info->pNext);
+   return entry->saved_proc_table.CreateSemaphore(device, info, allocator, semaphore);
+}
 
 static VKAPI_ATTR VkResult VKAPI_CALL
 vkr_win32_CreateBuffer(VkDevice device,
@@ -274,7 +298,12 @@ vkr_win32_CreateImage(VkDevice device,
          break;
       }
    }
-   if (ext_info && ext_info->handleTypes &&
+   /* Preserve the requested tiling in the opaque Vulkan/GL interop profile.
+    * NVIDIA does not support LINEAR color attachments. The modifier shim's
+    * forced LINEAR storage must never change a plain opaque image contract.
+    */
+   if (entry->dev->physical_device->dma_buf_shim_active &&
+       ext_info && ext_info->handleTypes &&
        info_in->tiling != VK_IMAGE_TILING_LINEAR) {
       info_local = *info_in;
       info_local.tiling = VK_IMAGE_TILING_LINEAR;
@@ -589,7 +618,9 @@ vkr_win32_device_install_shim(struct vkr_device *dev)
    if (dev->physical_device->host_external_memory_win32 ||
        dev->physical_device->host_external_fence_win32 ||
        dev->physical_device->host_external_semaphore_win32) {
-      vk->CreateBuffer = vkr_win32_CreateBuffer;
+   vk->CreateBuffer = vkr_win32_CreateBuffer;
+   vk->CreateFence = vkr_win32_CreateFence;
+   vk->CreateSemaphore = vkr_win32_CreateSemaphore;
       vk->CreateImage = vkr_win32_CreateImage;
 
       if (dev->GetMemoryWin32HandleKHR)

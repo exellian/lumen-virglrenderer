@@ -80,6 +80,10 @@ struct virgl_resource_vulkan_info {
  */
 struct virgl_resource {
    uint32_t res_id;
+#ifdef _WIN32
+   uint32_t lm_context;
+   uint64_t lm_blob;
+#endif
 
    struct pipe_resource *pipe_resource;
 

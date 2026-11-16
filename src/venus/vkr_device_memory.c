@@ -477,7 +477,7 @@ vkr_dispatch_vkAllocateMemory(struct vn_dispatch_context *dispatch,
     * DMA_BUF bit, so valid_fd_types correctly reports DMA_BUF back to the
     * guest. OPAQUE_FD is similarly remapped to OPAQUE_WIN32 for consistency.
     */
-   if (export_info && physical_dev->dma_buf_shim_active) {
+   if (export_info && physical_dev->host_external_memory_win32) {
       const VkExternalMemoryHandleTypeFlags fd_bits =
          VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT |
          VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD_BIT;
@@ -503,6 +503,10 @@ vkr_dispatch_vkAllocateMemory(struct vn_dispatch_context *dispatch,
       return;
    }
 
+#ifdef _WIN32
+   if (local_import_win32_info.handle && local_import_win32_info.handle != INVALID_HANDLE_VALUE)
+      CloseHandle(local_import_win32_info.handle);
+#endif
    mem->device = dev;
    mem->might_export = might_export;
    mem->property_flags = property_flags;
@@ -518,12 +522,18 @@ vkr_dispatch_vkFreeMemory(struct vn_dispatch_context *dispatch,
                           struct vn_command_vkFreeMemory *args)
 {
    TRACE_FUNC();
+   struct vkr_context *ctx = dispatch->data;
+#ifdef _WIN32
+   mtx_lock(&ctx->lm_scanout_mutex);
+#endif
    struct vkr_device_memory *mem = vkr_device_memory_from_handle(args->memory);
-   if (!mem)
-      return;
-
-   vkr_device_memory_release(mem);
-   vkr_device_memory_destroy_and_remove(dispatch->data, args);
+   if (mem) {
+      vkr_device_memory_release(mem);
+      vkr_device_memory_destroy_and_remove(ctx, args);
+   }
+#ifdef _WIN32
+   mtx_unlock(&ctx->lm_scanout_mutex);
+#endif
 }
 
 static void
@@ -633,6 +643,10 @@ vkr_context_init_device_memory_dispatch(struct vkr_context *ctx)
 void
 vkr_device_memory_release(struct vkr_device_memory *mem)
 {
+#ifdef _WIN32
+   if (mem->lm_semaphore) mem->device->proc_table.DestroySemaphore(mem->device->base.handle.device, mem->lm_semaphore, NULL);
+   if (mem->lm_fence) mem->device->proc_table.DestroyFence(mem->device->base.handle.device, mem->lm_fence, NULL);
+#endif
    if (mem->gbm_bo)
       vkr_gbm_bo_destroy(mem->gbm_bo);
    if (mem->udmabuf_fd >= 0)
