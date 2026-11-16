@@ -238,3 +238,75 @@ vkr_renderer_destroy_resource(uint32_t ctx_id, uint32_t res_id)
    if (ctx)
       vkr_context_destroy_resource(ctx, res_id);
 }
+
+#ifdef _WIN32
+#include "vkr_device_memory.h"
+#include "vkr_device.h"
+#include "vkr_queue.h"
+#include "vkr_physical_device.h"
+/* Called with the Win32 server mutex held. The context scanout mutex excludes
+ * ring-thread memory/device destruction; object_mutex retains the lookup. */
+int vkr_renderer_win32_scanout_sync(uint32_t ctx_id, uint64_t blob, unsigned op, void **handle)
+{
+   struct vkr_context *ctx = vkr_renderer_lookup_context(ctx_id);
+   if (!ctx || op > 2 || (op == 0 && !handle)) return -EINVAL;
+   int ret = -EINVAL;
+   mtx_lock(&ctx->lm_scanout_mutex);
+   mtx_lock(&ctx->object_mutex);
+   const struct hash_entry *entry = _mesa_hash_table_search(ctx->object_table, &blob);
+   struct vkr_device_memory *mem = entry ? entry->data : NULL;
+   if (!mem || mem->base.type != VK_OBJECT_TYPE_DEVICE_MEMORY) goto out;
+   struct vkr_device *dev = mem->device;
+   struct vn_device_proc_table *vk = &dev->proc_table;
+   /* Match Lumen's first graphics family / queue zero. Venus may additionally
+    * request an internal feedback queue in the same native device. */
+   struct vkr_queue *queue = NULL;
+   list_for_each_entry(struct vkr_queue, candidate, &dev->queues, base.track_head) {
+      uint32_t family = candidate->family;
+      if (candidate->index == 0 && !candidate->flags &&
+          family < dev->physical_device->queue_family_property_count &&
+          (dev->physical_device->queue_family_properties[family].queueFlags & VK_QUEUE_GRAPHICS_BIT) &&
+          (!queue || family < queue->family)) queue = candidate;
+   }
+   if (!queue || !dev->GetSemaphoreWin32HandleKHR) goto out;
+   VkResult result = VK_SUCCESS;
+   if (op == 0 && mem->lm_scanout_phase == 0) {
+      *handle = NULL;
+      VkExportSemaphoreCreateInfo export = { .sType = VK_STRUCTURE_TYPE_EXPORT_SEMAPHORE_CREATE_INFO,
+         .handleTypes = VK_EXTERNAL_SEMAPHORE_HANDLE_TYPE_OPAQUE_WIN32_BIT };
+      VkSemaphoreCreateInfo info = { .sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO, .pNext = &export };
+      VkFenceCreateInfo fence = { .sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO };
+      result = vk->CreateSemaphore(dev->base.handle.device, &info, NULL, &mem->lm_semaphore);
+      if (result == VK_SUCCESS)
+         result = vk->CreateFence(dev->base.handle.device, &fence, NULL, &mem->lm_fence);
+      VkSemaphoreGetWin32HandleInfoKHR get = {
+         .sType = VK_STRUCTURE_TYPE_SEMAPHORE_GET_WIN32_HANDLE_INFO_KHR,
+         .semaphore = mem->lm_semaphore,
+         .handleType = VK_EXTERNAL_SEMAPHORE_HANDLE_TYPE_OPAQUE_WIN32_BIT };
+      if (result == VK_SUCCESS)
+         result = dev->GetSemaphoreWin32HandleKHR(dev->base.handle.device, &get, (HANDLE *)handle);
+      mem->lm_scanout_phase = result == VK_SUCCESS ? 1 : 3;
+   } else if ((op == 1 && mem->lm_scanout_phase == 1) ||
+              (op == 2 && mem->lm_scanout_phase == 2)) {
+      VkPipelineStageFlags stage = VK_PIPELINE_STAGE_ALL_COMMANDS_BIT;
+      VkSubmitInfo submit = { .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
+         .signalSemaphoreCount = op == 1 ? 1 : 0, .pSignalSemaphores = &mem->lm_semaphore,
+         .waitSemaphoreCount = op == 2 ? 1 : 0, .pWaitSemaphores = &mem->lm_semaphore,
+         .pWaitDstStageMask = &stage };
+      mtx_lock(&queue->vk_mutex);
+      if (op == 2) result = vk->ResetFences(dev->base.handle.device, 1, &mem->lm_fence);
+      if (result == VK_SUCCESS)
+         result = vk->QueueSubmit(queue->base.handle.queue, 1, &submit,
+                                  op == 2 ? mem->lm_fence : VK_NULL_HANDLE);
+      mtx_unlock(&queue->vk_mutex);
+      if (result == VK_SUCCESS && op == 2)
+         result = vk->WaitForFences(dev->base.handle.device, 1, &mem->lm_fence, true, 2000000000ULL);
+      mem->lm_scanout_phase = result == VK_SUCCESS ? (op == 1 ? 2 : 1) : 3;
+   } else { result = VK_ERROR_INITIALIZATION_FAILED; }
+   ret = result == VK_SUCCESS ? 0 : -EIO;
+out:
+   mtx_unlock(&ctx->object_mutex);
+   mtx_unlock(&ctx->lm_scanout_mutex);
+   return ret;
+}
+#endif

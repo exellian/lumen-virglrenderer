@@ -1071,11 +1071,40 @@ vkr_dispatch_vkGetPhysicalDeviceImageFormatProperties2(
    }
 #endif
 
+   /* Linux opaque handles describe the same Windows allocation through our
+    * FD shim. Capability queries must use the host handle type just as create,
+    * allocation and export do; a Windows ICD cannot interpret OPAQUE_FD.
+    */
+#ifdef _WIN32
+   VkPhysicalDeviceExternalImageFormatInfo *opaque_info = vkr_find_struct(
+      args->pImageFormatInfo->pNext,
+      VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_EXTERNAL_IMAGE_FORMAT_INFO);
+   const bool remap_opaque = opaque_info &&
+      physical_dev->host_external_memory_win32 &&
+      opaque_info->handleType == VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD_BIT;
+   if (remap_opaque)
+      opaque_info->handleType = VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_WIN32_BIT;
+#endif
    vn_replace_vkGetPhysicalDeviceImageFormatProperties2_args_handle(args);
    args->ret = vk->GetPhysicalDeviceImageFormatProperties2(
       args->physicalDevice, args->pImageFormatInfo, args->pImageFormatProperties);
 
 #ifdef _WIN32
+   if (remap_opaque) {
+      opaque_info->handleType = VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD_BIT;
+      VkExternalImageFormatProperties *props = vkr_find_struct(
+         args->pImageFormatProperties->pNext,
+         VK_STRUCTURE_TYPE_EXTERNAL_IMAGE_FORMAT_PROPERTIES);
+      if (args->ret == VK_SUCCESS && props) {
+         VkExternalMemoryProperties *mem = &props->externalMemoryProperties;
+         mem->compatibleHandleTypes =
+            (mem->compatibleHandleTypes & VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_WIN32_BIT) ?
+            VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD_BIT : 0;
+         mem->exportFromImportedHandleTypes =
+            (mem->exportFromImportedHandleTypes & VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_WIN32_BIT) ?
+            VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD_BIT : 0;
+      }
+   }
    /* Translate the host's OPAQUE_WIN32 result back to DMA_BUF in the reply. */
    if (ext_info_ptr) {
       ext_info_ptr->handleType = saved_handle_type;

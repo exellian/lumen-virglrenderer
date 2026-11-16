@@ -74,4 +74,7 @@ vkr_renderer_import_resource(uint32_t ctx_id,
 void
 vkr_renderer_destroy_resource(uint32_t ctx_id, uint32_t res_id);
 
+#ifdef _WIN32
+int vkr_renderer_win32_scanout_sync(uint32_t ctx, uint64_t blob, unsigned op, void **handle);
+#endif
 #endif /* VKR_RENDERER_H */

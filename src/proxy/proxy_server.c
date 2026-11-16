@@ -220,7 +220,7 @@ server_cb_debug_logger(UNUSED enum virgl_log_level_flags log_level,
                        const char *message,
                        UNUSED void *user_data)
 {
-   (void)message;
+   fprintf(stderr, "%s\n", message);
 }
 
 static const struct vkr_renderer_callbacks server_vkr_cbs = {
@@ -426,30 +426,25 @@ server_context_worker_thread(void *arg)
       }
 
       case RENDER_CONTEXT_OP_IMPORT_RESOURCE: {
-         struct {
-            uint32_t res_id;
-            enum virgl_resource_fd_type fd_type;
-            uint64_t size;
-         } imp_body;
-
+         struct render_context_op_import_resource_request req = { .header = hdr };
          int fds[1];
          int fd_count;
-         if (!server_recv_with_fds(w->socket_fd, &imp_body, sizeof(imp_body),
+         /* The wire request retains padding after fd_type. A headerless
+          * local struct has a different layout and desynchronizes the stream. */
+         if (!server_recv_with_fds(w->socket_fd,
+                                   (char *)&req + sizeof(hdr), sizeof(req) - sizeof(hdr),
                                    fds, 1, &fd_count))
             goto done;
-
-         if (fd_count != 1) {
-            proxy_log("server worker: import resource missing fd");
-            break;
-         }
-
+         if (fd_count != 1)
+            goto done;
          mtx_lock(&state->renderer_mutex);
-         vkr_renderer_import_resource(w->ctx_id, imp_body.res_id,
-                                      imp_body.fd_type, fds[0], imp_body.size);
+         bool imported = vkr_renderer_import_resource(w->ctx_id, req.res_id,
+                                                       req.fd_type, fds[0], req.size);
          mtx_unlock(&state->renderer_mutex);
+         if (!imported)
+            goto done;
          break;
       }
-
       case RENDER_CONTEXT_OP_DESTROY_RESOURCE: {
          struct {
             uint32_t res_id;
@@ -792,3 +787,15 @@ proxy_server_create(void)
 
    return srv;
 }
+
+#ifdef _WIN32
+int proxy_server_win32_scanout_sync(uint32_t ctx, uint64_t blob, unsigned op, void **handle)
+{
+   struct server_thread_state *state = g_server_state;
+   if (!state) return -EINVAL;
+   mtx_lock(&state->renderer_mutex);
+   int result=vkr_renderer_win32_scanout_sync(ctx,blob,op,handle);
+   mtx_unlock(&state->renderer_mutex);
+   return result;
+}
+#endif

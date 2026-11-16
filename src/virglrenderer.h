@@ -439,6 +439,18 @@ VIRGL_EXPORT int virgl_renderer_resource_get_map_info(uint32_t res_handle, uint3
 VIRGL_EXPORT int
 virgl_renderer_resource_export_blob(uint32_t res_id, uint32_t *fd_type, int *fd);
 
+#ifdef _WIN32
+/* Private matching-host V1 ABI. Duplicate an opaque Win32 allocation handle.
+ * Caller retains the returned NT handles until the GL imports are destroyed;
+ * no CRT fd/token escapes here. Sync operations are 0=export, 1=acquire, 2=release. */
+VIRGL_EXPORT int
+virgl_renderer_resource_win32_sync_v1(uint32_t res_id, unsigned op, void **handle);
+VIRGL_EXPORT int
+virgl_renderer_resource_export_opaque_win32_v1(uint32_t res_id, void **handle,
+                                             uint64_t *size, uint8_t device_uuid[16],
+                                             uint8_t driver_uuid[16], uint32_t *memory_type);
+#endif
+
 struct virgl_renderer_resource_import_blob_args
 {
    uint32_t res_handle;

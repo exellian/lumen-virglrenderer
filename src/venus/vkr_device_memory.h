@@ -30,6 +30,11 @@ struct vkr_device_memory {
    uint32_t memory_type_index;
 
    bool exported;
+#ifdef _WIN32
+   VkSemaphore lm_semaphore;
+   VkFence lm_fence;
+   unsigned lm_scanout_phase; /* 0 uninitialized; 1 Vulkan; 2 GL; 3 failed. */
+#endif
 };
 VKR_DEFINE_OBJECT_CAST(device_memory, VK_OBJECT_TYPE_DEVICE_MEMORY, VkDeviceMemory)
 

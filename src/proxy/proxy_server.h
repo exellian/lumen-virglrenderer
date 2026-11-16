@@ -32,4 +32,7 @@ proxy_server_destroy(struct proxy_server *srv);
 int
 proxy_server_connect(struct proxy_server *srv);
 
+#ifdef _WIN32
+int proxy_server_win32_scanout_sync(uint32_t ctx, uint64_t blob, unsigned op, void **handle);
+#endif
 #endif /* PROXY_SERVER_H */

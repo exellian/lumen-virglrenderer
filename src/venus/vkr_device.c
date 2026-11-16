@@ -703,7 +703,13 @@ vkr_dispatch_vkDestroyDevice(struct vn_dispatch_context *dispatch,
    if (!dev)
       return;
 
+#ifdef _WIN32
+   mtx_lock(&ctx->lm_scanout_mutex);
+#endif
    vkr_device_destroy(ctx, dev, true);
+#ifdef _WIN32
+   mtx_unlock(&ctx->lm_scanout_mutex);
+#endif
 }
 
 static void

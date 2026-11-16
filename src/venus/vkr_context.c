@@ -629,6 +629,9 @@ vkr_context_destroy(struct vkr_context *ctx)
       vkr_ring_destroy(ring);
    }
    mtx_destroy(&ctx->ring_mutex);
+#ifdef _WIN32
+   mtx_destroy(&ctx->lm_scanout_mutex);
+#endif
 
    vkr_context_wait_ring_fini(ctx);
 
@@ -743,6 +746,12 @@ vkr_context_create(uint32_t ctx_id,
       goto err_ctx_ring_mutex;
 
    list_inithead(&ctx->rings);
+#ifdef _WIN32
+   if (mtx_init(&ctx->lm_scanout_mutex, mtx_plain) != thrd_success) {
+      mtx_destroy(&ctx->ring_mutex);
+      goto err_ctx_ring_mutex;
+   }
+#endif
 
    return ctx;
 

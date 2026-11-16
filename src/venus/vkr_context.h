@@ -82,6 +82,10 @@ struct vkr_context {
       atomic_uint report_period_us;
    } ring_monitor;
 
+#ifdef _WIN32
+   /* Serialize private scanout queue access with Vulkan memory/device teardown. */
+   mtx_t lm_scanout_mutex;
+#endif
    mtx_t object_mutex;
    struct hash_table *object_table;
 

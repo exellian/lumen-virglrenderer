@@ -47,6 +47,7 @@
 #include "vkr_renderer.h"
 #include "drm_renderer.h"
 #include "proxy/proxy_renderer.h"
+#include "proxy/proxy_server.h"
 #include "vrend/vrend_renderer.h"
 #include "vrend/vrend_winsys.h"
 
@@ -484,6 +485,38 @@ void virgl_renderer_ctx_detach_resource(int ctx_id, int res_handle)
       return;
    ctx->detach_resource(ctx, res);
 }
+
+#ifdef _WIN32
+int virgl_renderer_resource_win32_sync_v1(uint32_t res_id, unsigned op, void **handle)
+{
+   struct virgl_resource *res = virgl_resource_lookup(res_id);
+   if (!res || res->fd_type != VIRGL_RESOURCE_FD_OPAQUE) return -EINVAL;
+   return proxy_server_win32_scanout_sync(res->lm_context, res->lm_blob, op, handle);
+}
+
+int virgl_renderer_resource_export_opaque_win32_v1(uint32_t res_id, void **handle,
+                                                  uint64_t *size, uint8_t device_uuid[16],
+                                                  uint8_t driver_uuid[16], uint32_t *memory_type)
+{
+   if (!handle || !size || !device_uuid || !driver_uuid || !memory_type) return -EINVAL;
+   *handle = NULL;
+   *size = 0;
+   struct virgl_resource *res = virgl_resource_lookup(res_id);
+   if (!res || res->fd_type != VIRGL_RESOURCE_FD_OPAQUE || res->fd < 0)
+      return -EINVAL;
+   HANDLE source = os_get_win32_handle_from_fd(res->fd);
+   HANDLE copy = NULL;
+   if (source == INVALID_HANDLE_VALUE ||
+       !DuplicateHandle(GetCurrentProcess(), source, GetCurrentProcess(), &copy,
+                        0, FALSE, DUPLICATE_SAME_ACCESS)) return -EINVAL;
+   *handle = copy;
+   *size = res->map_size;
+   *memory_type = res->vulkan_info.memory_type_index;
+   memcpy(device_uuid, res->vulkan_info.device_uuid, 16);
+   memcpy(driver_uuid, res->vulkan_info.driver_uuid, 16);
+   return 0;
+}
+#endif
 
 static int virgl_renderer_resource_get_info_common(int res_handle,
                                                    struct virgl_renderer_resource_info *info,
@@ -1244,6 +1277,10 @@ int virgl_renderer_resource_create_blob(const struct virgl_renderer_resource_cre
          return -ENOMEM;
    }
 
+#ifdef _WIN32
+   res->lm_context = args->ctx_id;
+   res->lm_blob = args->blob_id;
+#endif
    res->map_info = blob.map_info;
    res->map_size = args->size;
 
